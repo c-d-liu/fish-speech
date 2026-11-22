@@ -1,0 +1,148 @@
+# Train the Fish-Speech 1.5 text2semantic model from scratch, see tools/llama/train_from_scratch.py
+
+defaults:
+  - base
+  - _self_
+
+project: text2semantic_pretrain   # Outputs go to results/<project>. Training auto-resumes from there
+max_length: 8192   # max_seq_len of the released model. The length used in their training is not published
+
+# Data and tokenizer, relative to the folder the script is started from
+train_protos: ???   # list of .protos files or folders, e.g. "train_protos=[data/train_protos]"
+val_protos: ???
+tokenizer_path: checkpoints/fish-speech-1.5/tokenizer.tiktoken
+
+skip_text_prob: 0.1      # Train audio without transcript, only for the training set
+transcript_loss: true    # Train the text head on the transcript
+
+# Leave this empty for long runs: with a fixed seed, every resumed job would start over with
+# the same samples. Useful for debugging only.
+seed: null
+
+# Checkpoints:
+#   checkpoints/*.ckpt         latest training state, to resume from
+#   checkpoints/spaced/*.ckpt  weights at num_checkpoints evenly spaced steps, the last one at max_steps
+#   checkpoints/best/*.ckpt    weights with the lowest val/loss
+num_checkpoints: 10
+
+# Lightning Trainer
+trainer:
+  max_steps: 10000   # optimizer steps. Paper: 500k, on a corpus several hundred times larger
+  accumulate_grad_batches: 16   # 2 GPUs x batch_size 4 x 16 x 8192 = 1M tokens per optimizer step, as in the paper
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+  precision: bf16-true   # As in their configs. The norm weights of the released model are all exactly 1 because of it
+  limit_val_batches: 50
+  val_check_interval: ${eval:'250 * ${trainer.accumulate_grad_batches}'}   # in batches: every 250 optimizer steps
+  log_every_n_steps: 10
+  strategy:
+    broadcast_buffers: false   # the only buffers are constants
+
+tokenizer:
+  _target_: fish_speech.tokenizer.FishTokenizer
+  model_path: ${tokenizer_path}
+
+train_dataset:
+  _target_: fish_speech.datasets.pretrain.PretrainDataset
+  proto_files: ${train_protos}
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  num_codebooks: ${model.model.config.num_codebooks}
+  skip_text_prob: ${skip_text_prob}
+  transcript_loss: ${transcript_loss}
+
+val_dataset:
+  _target_: fish_speech.datasets.pretrain.PretrainDataset
+  proto_files: ${val_protos}
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  num_codebooks: ${model.model.config.num_codebooks}
+  skip_text_prob: 0.0
+  transcript_loss: ${transcript_loss}
+  fixed_samples: true   # Makes val/loss comparable between steps
+
+data:
+  _target_: fish_speech.datasets.semantic.SemanticDataModule
+  train_dataset: ${train_dataset}
+  val_dataset: ${val_dataset}
+  num_workers: 6   # per GPU. Every worker keeps its share of the protos in memory
+  batch_size: 4    # per GPU
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+
+model:
+  _target_: fish_speech.models.text2semantic.lit_module.TextToSemantic
+
+  # Randomly initialised. Same architecture as the released 1.5 model
+  model:
+    _target_: fish_speech.models.text2semantic.llama.DualARTransformer
+    tokenizer: ${tokenizer}
+    config:
+      _target_: fish_speech.models.text2semantic.llama.DualARModelArgs
+      vocab_size: 102048
+      max_seq_len: 8192
+      dim: 1024
+      n_layer: 24
+      n_head: 16
+      n_local_heads: 2
+      intermediate_size: 4096
+      n_fast_layer: 4
+      codebook_size: 1024
+      num_codebooks: 8
+      rope_base: 1000000.0
+      norm_eps: 1.0e-6
+      dropout: 0.0
+      tie_word_embeddings: false
+      attention_qkv_bias: false
+      initializer_range: 0.02
+      use_gradient_checkpointing: true
+
+  # Optimizer and schedule: appendix A of the Fish-Speech paper (arXiv 2411.01156)
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    _convert_: all   # betas as a plain list, torch >= 2.6 cannot load checkpoints containing a ListConfig
+    lr: 5e-4
+    weight_decay: 0.01
+    betas: [0.9, 0.98]
+    eps: 1e-8
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
+    lr_lambda:
+      _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 2000
+      num_training_steps: ${trainer.max_steps}
+      final_lr_ratio: 0.1
+
+callbacks:
+  # Training resumes from the newest file in ckpt_dir, the subfolders are not searched
+  model_checkpoint:
+    every_n_train_steps: 100
+    save_top_k: 1
+    enable_version_counter: false
+
+  spaced_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.ckpt_dir}/spaced
+    filename: "step_{step:09d}"
+    every_n_train_steps: ${eval:'${trainer.max_steps} // ${num_checkpoints}'}
+    monitor: step
+    mode: max
+    save_top_k: -1   # keep all
+    save_weights_only: true
+    auto_insert_metric_name: false
+    enable_version_counter: false
+
+  best_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.ckpt_dir}/best
+    filename: "step_{step:09d}"
+    monitor: val/loss
+    mode: min
+    save_top_k: 1
+    save_weights_only: true
+    auto_insert_metric_name: false
+    enable_version_counter: false
