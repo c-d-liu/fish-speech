@@ -1,0 +1,8 @@
+# Clips and speakers that convert.py always excludes, one id per line. Text after the id is ignored.
+
+# Dana Chivvis: Serial season 4 (Guantanamo), episode 1, published in the feed of The Daily. Speaker labels are
+# automatic and voices are mixed up in places, so all labels of the recording that may contain her are excluded
+EN_B00009_S08437 Dana Chivvis, narration
+EN_B00009_S08443 field tape, probably Dana Chivvis
+EN_B00009_S08430 Sarah Koenig, includes a clip with "And I'm Dana Chivvis"
+EN_B00009_S08438 interviews conducted by Dana Chivvis and Sarah Koenig
