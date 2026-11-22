@@ -14,7 +14,7 @@
 # Logs:     logs/emilia_<job>_<task>.log, the totals at the end are in logs/emilia_summary_<job>.log
 
 #SBATCH --job-name=emilia
-#SBATCH --gpus=1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=48G
 #SBATCH --requeue
@@ -26,7 +26,7 @@ set -euo pipefail
 export OUTPUT="${OUTPUT:-data/emilia_en}"
 export NUM_SHARDS="${NUM_SHARDS:-8}"        # array tasks, each with one GPU. Fixed, so that resubmitting keeps the shards
 export PYTHON="${PYTHON:-}"                 # default: .venv of my-dual-ar-tts, two folders up
-PARTITION="${PARTITION:-gpu-big}"
+PARTITION="${PARTITION:-gpu}"
 TIME="${TIME:-24:00:00}"
 MAX_PARALLEL="${MAX_PARALLEL:-$NUM_SHARDS}" # GPUs used at the same time
 export CHECKPOINT="${CHECKPOINT:-checkpoints/fish-speech-1.5/firefly-gan-vq-fsq-8x1024-21hz-generator.pth}"
