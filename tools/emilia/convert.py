@@ -19,7 +19,7 @@ Finished tars are skipped, so jobs can be resubmitted. Request access on the dat
     huggingface-cli download fishaudio/fish-speech-1.5 firefly-gan-vq-fsq-8x1024-21hz-generator.pth \
         --local-dir checkpoints/fish-speech-1.5
 
-Run it from the fish-speech folder. The tars are distributed over the tasks of a SLURM array, one GPU each:
+Run it from the fish-speech folder. convert.sh runs it as a SLURM array:
 
     python tools/emilia/convert.py --output data/emilia_en
     python tools/emilia/convert.py --output data/emilia_en --exclude excluded.txt   # see search.py
@@ -426,6 +426,38 @@ def convert_tar(
     return stats
 
 
+class AccessError(click.ClickException):
+    exit_code = 3  # retrying does not help, unlike after exit code 1
+
+    def __init__(self):
+        super().__init__(
+            f"No access to {REPO}: request it on the dataset page, then log in on this "
+            "machine with `huggingface-cli login` (`hf auth login` in newer versions)"
+        )
+
+
+def check_setup(path: str, checkpoint_path: str) -> None:
+    """Find out what is missing before waiting for a GPU."""
+
+    if "MP3" not in sf.available_formats():
+        raise click.ClickException("soundfile cannot read mp3, update it")
+
+    if not Path(checkpoint_path).is_file():
+        raise click.ClickException(f"No codec at {checkpoint_path}")
+
+    stream = HttpStream(path)
+    try:
+        stream.connect()
+    except requests.HTTPError as e:
+        if e.response.status_code in (401, 403):
+            raise AccessError()
+        raise
+    finally:
+        stream.close()
+
+    print("Access to the dataset, the codec and mp3 decoding are fine")
+
+
 def list_tars(subset: str) -> list[str]:
     files = HfApi().list_repo_tree(
         REPO, subset, repo_type="dataset", revision=REVISION, recursive=True
@@ -488,6 +520,7 @@ def print_summary(output: Path, num_tars: int) -> None:
 )
 @click.option("--device", default="cuda")
 @click.option("--summary", is_flag=True, help="Print the progress and exit")
+@click.option("--check", is_flag=True, help="Check the setup and exit")
 def main(
     output: Path,
     subset: str,
@@ -504,6 +537,7 @@ def main(
     shard_id: int,
     device: str,
     summary: bool,
+    check: bool,
 ):
     tars = list_tars(subset)
     if len(tars) == 0:
@@ -511,6 +545,9 @@ def main(
 
     if summary:
         return print_summary(output, len(tars))
+
+    if check:
+        return check_setup(tars[0], checkpoint_path)
 
     if not 0 <= shard_id < num_shards:
         raise click.ClickException(f"Shard {shard_id} of {num_shards} does not exist")
@@ -552,9 +589,7 @@ def main(
                 )
             except requests.HTTPError as e:
                 if e.response.status_code in (401, 403):
-                    raise click.ClickException(
-                        f"No access to {REPO}: request it on the dataset page and log in"
-                    )
+                    raise AccessError()
                 logger.exception(f"{path} failed")
                 failed.append(path)
                 continue
