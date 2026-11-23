@@ -8,8 +8,8 @@ project: text2semantic_pretrain   # Outputs go to results/<project>. Training au
 max_length: 8192   # max_seq_len of the released model. The length used in their training is not published
 
 # Data and tokenizer, relative to the folder the script is started from
-train_protos: ???   # list of .protos files or folders, e.g. "train_protos=[data/train_protos]"
-val_protos: ???
+train_protos: [data/emilia_en/train]   # list of .protos files or folders, e.g. "train_protos=[data/train_protos]"
+val_protos: [data/emilia_en/val]
 tokenizer_path: checkpoints/fish-speech-1.5/tokenizer.tiktoken
 
 skip_text_prob: 0.1      # Train audio without transcript, only for the training set
@@ -27,7 +27,10 @@ num_checkpoints: 10
 
 # Lightning Trainer
 trainer:
-  max_steps: 10000   # optimizer steps. Paper: 500k, on a corpus several hundred times larger
+  # Optimizer steps. Paper: 500k on 720k h. Here 9 epochs of Emilia/EN (43,972 h train):
+  # 3.409e9 frames + ~0.68e9 transcript tokens = ~4.09e9 positions per epoch, 9 x 4.09e9 / 1,048,576 = 35k.
+  # That assumes full 8192 sequences: multiply by 8192 / (mean real sequence length) to correct for padding.
+  max_steps: 35000
   accumulate_grad_batches: 16   # 2 GPUs x batch_size 4 x 16 x 8192 = 1M tokens per optimizer step, as in the paper
   gradient_clip_val: 1.0
   gradient_clip_algorithm: "norm"
@@ -146,3 +149,16 @@ callbacks:
     save_weights_only: true
     auto_insert_metric_name: false
     enable_version_counter: false
+
+# Weights & Biases, in addition to TensorBoard. Disable with "~logger.wandb", or run offline with
+# WANDB_MODE=offline and upload later with `wandb sync results/<project>/wandb/offline-run-*`
+logger:
+  wandb:
+    _target_: lightning.pytorch.loggers.wandb.WandbLogger
+    project: fish-speech-pretrain   # W&B project, shared by all runs
+    name: ${project}
+    id: ${project}     # Fixed, so that the auto-resumed jobs of a run continue the same W&B run
+    resume: allow
+    save_dir: ${paths.run_dir}
+    log_model: false   # The checkpoints stay local
+    entity: null       # Your W&B team, or null for your default entity
